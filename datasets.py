@@ -12,48 +12,85 @@ def load_numeric_data():
     return np.array(data)
 
 
-def generate_shapes(size=28, n_samples=20):
-    """Gera formas geométricas sintéticas"""
+import numpy as np
+from skimage.draw import disk, polygon
+from skimage.transform import resize
+from scipy.ndimage import gaussian_filter
+
+def generate_shapes(size=32, n_samples=50):
     shapes = []
     labels = []
     
+    # Aumenta resolução inicial
+    high_res = size * 4  # 4x resolução final
+    
+    shape_mapping = {
+        'circle': 0,
+        'square': 1, 
+        'triangle': 2
+    }
+    
     for _ in range(n_samples):
-        # Cria imagem vazia
-        img = np.zeros((size, size))
+        img = np.zeros((high_res, high_res))
+        center = np.array([high_res//2, high_res//2])
+        radius = high_res//4  # Proporção mais precisa
         
-        # Escolhe forma aleatória
-        shape_type = np.random.choice(['circle', 'square', 'triangle'])
-        
-        # Gera parâmetros aleatórios
-        center = np.random.randint(size//4, 3*size//4, 2)
-        radius = np.random.randint(3, size//4)
+        shape_type = np.random.choice(list(shape_mapping.keys()))
         
         if shape_type == 'circle':
-            # Desenha círculo
-            y, x = np.ogrid[:size, :size]
+            # Círculo mais suave
+            y, x = np.ogrid[:high_res, :high_res]
             dist = np.sqrt((x - center[0])**2 + (y - center[1])**2)
             img[dist <= radius] = 1
-            labels.append(0)
+            # Suaviza bordas
+            img = gaussian_filter(img, sigma=1.5)
             
         elif shape_type == 'square':
-            # Desenha quadrado
-            x1, y1 = center[0] - radius, center[1] - radius
-            x2, y2 = center[0] + radius, center[1] + radius
-            img[y1:y2, x1:x2] = 1
-            labels.append(1)
+            # Quadrado com rotação
+            angle = np.random.uniform(0, 360)
+            points = np.array([
+                [-radius, -radius],
+                [radius, -radius],
+                [radius, radius],
+                [-radius, radius]
+            ]) * 0.8  # Ajusta tamanho
             
-        else:
-            # Desenha triângulo
-            pts = np.array([
-                [center[0], center[1] - radius],
-                [center[0] - radius, center[1] + radius],
-                [center[0] + radius, center[1] + radius]
+            rot = np.array([
+                [np.cos(np.radians(angle)), -np.sin(np.radians(angle))],
+                [np.sin(np.radians(angle)), np.cos(np.radians(angle))]
             ])
-            rr, cc = polygon(pts[:,0], pts[:,1], img.shape)
+            points = np.dot(points, rot)
+            points += center
+            rr, cc = polygon(points[:,0], points[:,1], img.shape)
             img[rr, cc] = 1
-            labels.append(2)
+            img = gaussian_filter(img, sigma=0.8)
             
+        else:  # triangle
+            # Triângulo equilátero mais preciso
+            side = radius * 1.5
+            height = side * np.sqrt(3)/2
+            points = np.array([
+                [center[0], center[1] - height/2],
+                [center[0] - side/2, center[1] + height/2],
+                [center[0] + side/2, center[1] + height/2]
+            ])
+            
+            angle = np.random.uniform(0, 360)
+            rot = np.array([
+                [np.cos(np.radians(angle)), -np.sin(np.radians(angle))],
+                [np.sin(np.radians(angle)), np.cos(np.radians(angle))]
+            ])
+            points = np.dot(points - center, rot) + center
+            rr, cc = polygon(points[:,0], points[:,1], img.shape)
+            img[rr, cc] = 1
+            img = gaussian_filter(img, sigma=1.0)
+        
+        # Redimensiona com antialiasing
+        img = resize(img, (size, size), anti_aliasing=True, mode='constant')
+        img = (img > 0.5).astype(float)  # Binariza novamente
+        
         shapes.append(img.flatten())
+        labels.append(shape_mapping[shape_type])
     
     return np.array(shapes), np.array(labels)
 
