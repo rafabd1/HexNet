@@ -89,6 +89,11 @@ def generate_shapes(size=32, n_samples=50):
         img = resize(img, (size, size), anti_aliasing=True, mode='constant')
         img = (img > 0.5).astype(float)  # Binariza novamente
         
+        # Adiciona ruído aleatório para garantir imagens diferentes
+        noise = np.random.normal(0, 0.01, (size, size))
+        img = img + noise
+        img = np.clip(img, 0, 1)
+        
         shapes.append(img.flatten())
         labels.append(shape_mapping[shape_type])
     

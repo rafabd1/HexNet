@@ -1,5 +1,5 @@
 import numpy as np
-from core_network import ComplexGeometricNetwork, GeometricShape
+from geometric_network import ComplexGeometricNetwork, GeometricShape
 from converters import numeric_converter
 from datasets import load_numeric_data, generate_shapes, load_vision_data
 import matplotlib.pyplot as plt
@@ -46,7 +46,7 @@ def main_vision():
     # Treina apenas com features
     X_norm = (X - X.min()) / (X.max() - X.min())
     net.learn(
-        training_data=X_norm,  # Remove concatenação com labels
+        training_data=X_norm,
         epochs=100, 
         real_time_monitor=True
     )
@@ -61,15 +61,27 @@ def main_vision():
     plt.figure(figsize=(20,4))
     correct = 0
     
+    predictions = []  # Lista para armazenar predições
+    
     for i in range(5):
+        # Normaliza cada imagem individualmente
+        img = test_X[i].reshape(1, -1)
+        img = (img - img.min()) / (img.max() - img.min())
+        
+        # Processa com reset de estado
+        with torch.no_grad():
+            pred = net.process_input_batch(img)
+            pred = pred.squeeze()
+            pred = torch.softmax(pred, dim=0)
+            pred_idx = int(torch.argmax(pred).item())
+            predictions.append(pred_idx)  # Armazena predição
+            
+        # Verifica se predições são diferentes    
+        if i > 0 and predictions[i] == predictions[i-1]:
+            print(f"Aviso: Predições iguais para imagens {i-1} e {i}")
+            
         plt.subplot(1,5,i+1)
         plt.imshow(test_X[i].reshape(size,size), cmap='gray')
-        
-        # Processa com softmax corrigido
-        pred = net.process_input_batch(test_X[i].reshape(1, -1))
-        pred = pred.squeeze()  # Remove dimensão extra
-        pred = torch.softmax(pred, dim=0)  # Aplica softmax na dimensão correta
-        pred_idx = int(torch.argmax(pred).item())
         
         # Avalia
         if pred_idx == test_y[i]:
@@ -94,5 +106,5 @@ def main_vision():
 if __name__ == "__main__":
     print("=== Teste com dados numéricos ===")
     main_numeric()
-    # print("\n=== Teste com dados de visão computacional ===")
-    # main_vision()
+    print("\n=== Teste com dados de visão computacional ===")
+    main_vision()

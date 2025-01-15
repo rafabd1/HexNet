@@ -3,33 +3,15 @@ os.environ['KMP_DUPLICATE_LIB_OK']='TRUE'
 import torch
 import itertools
 from enum import Enum
+from geometric_cell import GeometricCell
+from utils import device
 import matplotlib.pyplot as plt
-
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-print(f"GPU: {torch.cuda.get_device_name(0)}")
 
 class GeometricShape(Enum):
     HYPERCUBE = "hypercube"
     DODECAHEDRON = "dodecahedron"
     TESSERACT = "tesseract"
     ADAPTIVE = "adaptive"
-
-class GeometricCell:
-    def __init__(self, dimensions, value=0.0):
-        self.dimensions = dimensions
-        self.position = torch.zeros(dimensions, device=device)
-        self.value = torch.tensor(value, device=device)
-        self.bias = 0.01
-        self.connections = []
-        self.gradient = torch.zeros(dimensions, device=device)
-        self.momentum = 0.8
-
-    def update_value(self, new_value):
-        l2_reg = 0.01 * torch.sum(self.position ** 2)
-        self.value = new_value * (1 - self.momentum) + self.value * self.momentum - l2_reg
-
-    def add_connection(self, other_cell):
-        self.connections.append(other_cell)
 
 class ComplexGeometricNetwork:
     def __init__(self, input_dimensions, output_dimensions, shape_type=GeometricShape.HYPERCUBE):
@@ -44,22 +26,13 @@ class ComplexGeometricNetwork:
         self.best_error = float('inf')
         self.stress_threshold = 0.3
         self.learning_rate = 0.005
-        self.attention_weights = None  # Será inicializado dinamicamente
+        self.attention_weights = None
         self.skip_connections = True
-        self.activation = lambda x: torch.relu(x)  # Troca para ReLU
+        self.activation = lambda x: torch.relu(x)
         self.momentum = 0.85
         self.patience = 40
         self.min_delta = 0.0005
         self._initialize_topology()
-    
-    def _attention_layer(self, x):
-        """Implementa mecanismo de atenção com dimensões corretas"""
-        if self.attention_weights is None or self.attention_weights.shape[0] != x.shape[0]:
-            self.attention_weights = torch.ones(x.shape[0], device=device) / x.shape[0]
-            
-        # Aplica atenção preservando dimensões
-        attention = torch.softmax(self.attention_weights * torch.mean(x), dim=0)
-        return x * attention.unsqueeze(-1) if x.dim() > 1 else x * attention
 
     def _initialize_topology(self):
         if self.shape_type in {GeometricShape.HYPERCUBE, GeometricShape.DODECAHEDRON, GeometricShape.TESSERACT}:
@@ -87,7 +60,6 @@ class ComplexGeometricNetwork:
 
     def _map_input_to_cells(self, batch_data):
         batch_size = batch_data.shape[0]
-        # Mapeia input para células
         all_positions = torch.stack([cell.position for cell in self.cells], dim=0)
         centroid = torch.mean(all_positions, dim=0)
         distances = torch.norm(all_positions - centroid, dim=1)
@@ -95,9 +67,7 @@ class ComplexGeometricNetwork:
         weights_cell = weights_cell.unsqueeze(-1)
         positions_abs = torch.exp(-torch.abs(all_positions))
 
-        # Processa batch
         for b in range(batch_size):
-            # Separa features das labels (se houver)
             input_slice = batch_data[b]
             if input_slice.shape[0] > self.input_dimensions:
                 input_slice = input_slice[:self.input_dimensions]
@@ -107,43 +77,40 @@ class ComplexGeometricNetwork:
             weighted_input = torch.sum(input_slice.unsqueeze(0) * positions_abs, dim=1) * weights_cell.squeeze()
             activation_vals = self.activation(weighted_input)
             
-            # Atualiza células
             for i, cell in enumerate(self.cells):
                 cell.update_value(activation_vals[i])
 
     def process_input_batch(self, batch_data):
-        # batch_data.shape = (batch_size, input_dims)
         batch_size = batch_data.shape[0]
         all_preds = []
 
         for i in range(batch_size):
-            single_input = torch.tensor(batch_data[i], dtype=torch.float, device=device).unsqueeze(0)  # (1, input_dims)
-            
-            # Faz o map_input para 1 amostra
+            single_input = torch.tensor(batch_data[i], dtype=torch.float, device=device).unsqueeze(0)
             self._map_input_to_cells(single_input)
             self._morph_structure(morph_factor=0.1)
 
-            # Extrai feature
             values = torch.stack([c.value for c in self.cells], dim=0)
             values = self._attention_layer(values)
-            feature_map = self._reduce_dimensions(values).unsqueeze(0)  # (1, output_dims)
+            feature_map = self._reduce_dimensions(values).unsqueeze(0)
 
-            # Skip connection
             if self.skip_connections:
-                mean_input = torch.mean(single_input, dim=1)  # (1,)
-                mean_input = mean_input[:self.output_dimensions].unsqueeze(0)  # (1, output_dims)
+                mean_input = torch.mean(single_input, dim=1)
+                mean_input = mean_input[:self.output_dimensions].unsqueeze(0)
                 feature_map = feature_map + mean_input
 
-            # Normalização e softmax
             feature_map = torch.layer_norm(feature_map, feature_map.shape)
-            preds = torch.softmax(feature_map, dim=-1)  # (1, output_dims)
+            preds = torch.softmax(feature_map, dim=-1)
             all_preds.append(preds)
 
-        # Retorna shape (batch_size, output_dims)
         return torch.cat(all_preds, dim=0)
-        
+
+    def _attention_layer(self, x):
+        if self.attention_weights is None or self.attention_weights.shape[0] != x.shape[0]:
+            self.attention_weights = torch.ones(x.shape[0], device=device) / x.shape[0]
+        attention = torch.softmax(self.attention_weights * torch.mean(x), dim=0)
+        return x * attention.unsqueeze(-1) if x.dim() > 1 else x * attention
+
     def _reduce_dimensions(self, values):
-        """Redução dimensional melhorada"""
         n_cells = len(self.cells)
         region_size = max(1, n_cells // self.output_dimensions)
         
@@ -151,92 +118,76 @@ class ComplexGeometricNetwork:
         for i in range(self.output_dimensions):
             start_idx = i * region_size
             end_idx = min(start_idx + region_size, n_cells)
-            
-            # Extração de features mais robusta
             region_values = values[start_idx:end_idx]
             mean_val = torch.mean(region_values)
             max_val = torch.max(region_values)
             min_val = torch.min(region_values)
             std_val = torch.std(region_values)
-            
-            # Combina diferentes estatísticas
             region_output = (mean_val + max_val + min_val + std_val) / 4
             outputs.append(region_output)
             
         return torch.stack(outputs)
 
     def learn(self, training_data, epochs, validation_data=None, real_time_monitor=False):
-        # Usa 'validation_data' para suprimir erro de variável não utilizada
-        if validation_data is not None:
-            _ = validation_data
-        # Inicialização
-        batch_size = 16
+        batch_size = min(32, len(training_data))
         training_data = torch.tensor(training_data, dtype=torch.float, device=device)
         num_samples = training_data.shape[0]
+        num_batches = max(1, num_samples // batch_size)
         
-        # Parâmetros de otimização
+        optimizer = torch.optim.Adam([
+            {'params': [cell.position for cell in self.cells]},
+        ], lr=0.001, weight_decay=0.01)
+        
+        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+            optimizer, mode='min', factor=0.5, patience=5, verbose=True
+        )
+        
         best_weights = None
         patience_counter = 0
-        min_lr = 0.001
-        max_lr = 0.01
-        l2_lambda = 0.01  # Regularização L2
+        l2_lambda = 0.01
+        loss_fn = torch.nn.CrossEntropyLoss()
         
-        loss_fn = torch.nn.CrossEntropyLoss()  # Usa CrossEntropy
         for epoch in range(epochs):
-            # Learning rate com decaimento
-            current_lr = max_lr * torch.exp(torch.tensor(-epoch/100.0, device=device))
-            self.learning_rate = float(max(current_lr.item(), min_lr))
-            err_sum = 0.0
-            
-            # Rotação da estrutura
-            angles = torch.linspace(0, torch.pi/8, steps=4, device=device)
-            for angle in angles:
-                for i in range(min(self.dimensions, training_data.shape[1]) - 1):
-                    self._rotate_structure(angle, (i, i + 1))
-            
-            # Processamento dos batches
+            epoch_loss = 0
             idx = torch.randperm(num_samples, device=device)
+            
             for start in range(0, num_samples, batch_size):
+                optimizer.zero_grad()
                 end = min(start + batch_size, num_samples)
                 batch = training_data[idx[start:end]]
-                
-                # Forward pass
-                outputs = self.process_input_batch(batch)
-                
-                # Target e cálculo do erro
-                target = torch.zeros((batch.shape[0], self.output_dimensions), device=device)
-                for i in range(self.output_dimensions):
-                    target[:, i] = batch[:, i] if i < batch.shape[1] else 0
-                            
-                # Erro total
-                target_indices = torch.argmax(target, dim=1)
+                outputs = self.process_input_batch(batch).clone().requires_grad_(True)
+                target_indices = torch.argmax(batch[:, :self.output_dimensions], dim=1)
                 cross_loss = loss_fn(outputs, target_indices)
                 l2_reg = l2_lambda * sum(torch.sum(cell.position ** 2) for cell in self.cells)
-                errors = cross_loss + l2_reg
-                err_sum += float(torch.sum(errors).item())
+                loss = cross_loss + l2_reg
+                loss.backward(retain_graph=True)
+                torch.nn.utils.clip_grad_norm_([cell.position for cell in self.cells], max_norm=1.0)
+                optimizer.step()
+                epoch_loss += loss.item()
                 
-                # Adaptação da estrutura
-                high_error = 0.1 * (1 - epoch/epochs)
-                if torch.any(errors > high_error):
-                    patterns = self._detect_local_patterns()
-                    self._adapt_structure({'local': patterns})
-                    self._optimize_cell_positions(patterns)
+                if epoch < epochs // 2 and start == 0:
+                    with torch.no_grad():
+                        patterns = self._detect_local_patterns()
+                        self._adapt_structure({'local': patterns})
+                        self._optimize_cell_positions(patterns)
             
-            # Erro médio da época
-            avg_error = err_sum / num_samples
-            self.training_errors.append(avg_error)
+            avg_loss = epoch_loss / num_batches
+            scheduler.step(avg_loss)
+            self.training_errors.append(avg_loss)
             
-            # Monitoramento
             if real_time_monitor:
-                print(f"Epoch {epoch}: Error = {avg_error:.4f} (lr={self.learning_rate:.6f})")
+                print(f"Epoch {epoch}: Loss = {avg_loss:.4f}, LR = {optimizer.param_groups[0]['lr']:.6f}")
             
-            # Early stopping
-            if avg_error < self.best_error - self.min_delta:
-                self.best_error = avg_error
+            if avg_loss < self.best_error - self.min_delta:
+                self.best_error = avg_loss
                 patience_counter = 0
                 best_weights = [cell.position.clone() for cell in self.cells]
             else:
                 patience_counter += 1
+                
+                if patience_counter % 3 == 0:
+                    for param_group in optimizer.param_groups:
+                        param_group['lr'] = param_group['lr'] * 0.5
             
             if patience_counter >= self.patience:
                 print(f"Early stopping na época {epoch}")
@@ -282,6 +233,14 @@ class ComplexGeometricNetwork:
         max_connections = 2 ** self.dimensions
         all_positions = torch.stack([c.position for c in self.cells], dim=0)
         dist = torch.norm(all_positions - cell.position, dim=1)
+        sorted_indices = torch.argsort(dist)
+        for i in sorted_indices:
+            if len(cell.connections) >= max_connections:
+                break
+            other_cell = self.cells[i]
+            if other_cell != cell and other_cell not in cell.connections:
+                cell.add_connection(other_cell)
+                
     def _detect_local_patterns(self):
         patterns = []
         all_positions = torch.stack([c.position for c in self.cells], dim=0)
@@ -368,25 +327,3 @@ class ComplexGeometricNetwork:
 
     def _apply_geometric_constraints(self, cell):
         cell.position = torch.clamp(cell.position, 0.0, 1.0)
-
-    def analyze_sensitivity(self, input_data, delta=0.01):
-        input_tensor = torch.tensor(input_data, device=device).float()
-        base_output = self.process_input_batch(input_tensor.unsqueeze(0))
-        sensitivities = []
-        for i in range(len(input_tensor.flatten())):
-            perturbed_input = input_tensor.clone().flatten()
-            perturbed_input[i] += delta
-            new_output = self.process_input_batch(perturbed_input.view(1, -1))
-            sensitivity = (new_output - base_output) / delta
-            sensitivities.append((i, sensitivity))
-        return sensitivities
-
-    def plot_learning_curves(self):
-        plt.figure()
-        plt.plot(self.training_errors, label='Training Error')
-        if len(self.validation_errors) > 0:
-            plt.plot(self.validation_errors, label='Validation Error', linestyle='--')
-        plt.xlabel('Epoch')
-        plt.ylabel('Error')
-        plt.legend()
-        plt.show()
