@@ -1,5 +1,41 @@
 import numpy as np
-from skimage.draw import polygon
+import yfinance as yf
+import pandas as pd
+
+def load_financial_data(test_size=0.2):
+    """Carrega dados do índice S&P500 - último ano"""
+    # Download 1 ano de dados
+    sp500 = yf.download('^GSPC', 
+                        start='2023-01-01', 
+                        end='2024-01-01',
+                        interval='1d')
+    
+    # Features técnicas mais importantes
+    sp500['Returns'] = sp500['Close'].pct_change()
+    sp500['MA20'] = sp500['Close'].rolling(window=20).mean()
+    sp500['RSI'] = calculate_rsi(sp500['Close'])
+    sp500['Volatility'] = sp500['Returns'].rolling(window=20).std()
+    
+    sp500 = sp500.dropna()
+    
+    # Features e target
+    X = sp500[['Returns', 'MA20', 'RSI', 'Volatility']].values
+    y = sp500['Close'].values
+    
+    # Split treino/teste
+    split_idx = int(len(X) * (1-test_size))
+    X_train, X_test = X[:split_idx], X[split_idx:]
+    y_train, y_test = y[:split_idx], y[split_idx:]
+    
+    return (X_train, y_train), (X_test, y_test)
+
+def calculate_rsi(data, periods=14):
+    """Calcula RSI"""
+    delta = data.diff()
+    gain = (delta.where(delta > 0, 0)).rolling(window=periods).mean()
+    loss = (-delta.where(delta < 0, 0)).rolling(window=periods).mean()
+    rs = gain / loss
+    return 100 - (100 / (1 + rs))
 
 def load_numeric_data():
     # Exemplo de dados climáticos
@@ -10,96 +46,3 @@ def load_numeric_data():
         [25.1, 1012, 67]
     ]
     return np.array(data)
-
-
-import numpy as np
-from skimage.draw import disk, polygon
-from skimage.transform import resize
-from scipy.ndimage import gaussian_filter
-
-def generate_shapes(size=32, n_samples=50):
-    shapes = []
-    labels = []
-    
-    # Aumenta resolução inicial
-    high_res = size * 4  # 4x resolução final
-    
-    shape_mapping = {
-        'circle': 0,
-        'square': 1, 
-        'triangle': 2
-    }
-    
-    for _ in range(n_samples):
-        img = np.zeros((high_res, high_res))
-        center = np.array([high_res//2, high_res//2])
-        radius = high_res//4  # Proporção mais precisa
-        
-        shape_type = np.random.choice(list(shape_mapping.keys()))
-        
-        if shape_type == 'circle':
-            # Círculo mais suave
-            y, x = np.ogrid[:high_res, :high_res]
-            dist = np.sqrt((x - center[0])**2 + (y - center[1])**2)
-            img[dist <= radius] = 1
-            # Suaviza bordas
-            img = gaussian_filter(img, sigma=1.5)
-            
-        elif shape_type == 'square':
-            # Quadrado com rotação
-            angle = np.random.uniform(0, 360)
-            points = np.array([
-                [-radius, -radius],
-                [radius, -radius],
-                [radius, radius],
-                [-radius, radius]
-            ]) * 0.8  # Ajusta tamanho
-            
-            rot = np.array([
-                [np.cos(np.radians(angle)), -np.sin(np.radians(angle))],
-                [np.sin(np.radians(angle)), np.cos(np.radians(angle))]
-            ])
-            points = np.dot(points, rot)
-            points += center
-            rr, cc = polygon(points[:,0], points[:,1], img.shape)
-            img[rr, cc] = 1
-            img = gaussian_filter(img, sigma=0.8)
-            
-        else:  # triangle
-            # Triângulo equilátero mais preciso
-            side = radius * 1.5
-            height = side * np.sqrt(3)/2
-            points = np.array([
-                [center[0], center[1] - height/2],
-                [center[0] - side/2, center[1] + height/2],
-                [center[0] + side/2, center[1] + height/2]
-            ])
-            
-            angle = np.random.uniform(0, 360)
-            rot = np.array([
-                [np.cos(np.radians(angle)), -np.sin(np.radians(angle))],
-                [np.sin(np.radians(angle)), np.cos(np.radians(angle))]
-            ])
-            points = np.dot(points - center, rot) + center
-            rr, cc = polygon(points[:,0], points[:,1], img.shape)
-            img[rr, cc] = 1
-            img = gaussian_filter(img, sigma=1.0)
-        
-        # Redimensiona com antialiasing
-        img = resize(img, (size, size), anti_aliasing=True, mode='constant')
-        img = (img > 0.5).astype(float)  # Binariza novamente
-        
-        # Adiciona ruído aleatório para garantir imagens diferentes
-        noise = np.random.normal(0, 0.01, (size, size))
-        img = img + noise
-        img = np.clip(img, 0, 1)
-        
-        shapes.append(img.flatten())
-        labels.append(shape_mapping[shape_type])
-    
-    return np.array(shapes), np.array(labels)
-
-def load_vision_data():
-    """Carrega dataset de visão computacional"""
-    X, y = generate_shapes()
-    return X, y

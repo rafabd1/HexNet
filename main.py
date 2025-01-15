@@ -1,110 +1,98 @@
 import numpy as np
 from geometric_network import ComplexGeometricNetwork, GeometricShape
 from converters import numeric_converter
-from datasets import load_numeric_data, generate_shapes, load_vision_data
-import matplotlib.pyplot as plt
+from datasets import load_numeric_data, load_financial_data
 import torch
+from utils import device
+from sklearn.preprocessing import StandardScaler
+from sklearn.metrics import mean_squared_error
+from sklearn.metrics import mean_squared_error, mean_absolute_percentage_error
+import matplotlib.pyplot as plt
 
 
 def main_numeric():
+    # Carrega e normaliza dados
     data = load_numeric_data()
     X, scaler = numeric_converter(data)
+    X_tensor = torch.tensor(X, dtype=torch.float, device=device)
     
+    # Cria rede
     net = ComplexGeometricNetwork(
         input_dimensions=X.shape[1],
         output_dimensions=3,
         shape_type=GeometricShape.ADAPTIVE
-    )
+    )     
+    # Agora sim, treina a rede
     net.learn(
-        training_data=X,
+        training_data=X_tensor,
+        epochs=50,
+        real_time_monitor=True
+    )
+    
+    # Predição
+    sample = np.array([[25.0, 1014, 67]])
+    sample_norm = scaler.transform(sample)
+    sample_tensor = torch.tensor(sample_norm, dtype=torch.float, device=device)
+    prediction = net.process_input_batch(sample_tensor)
+    print("Predição (numérica):", scaler.inverse_transform(prediction.cpu().detach().numpy()))
+
+def main_financial():
+    # Carrega dados com split
+    (X_train, y_train), (X_test, y_test) = load_financial_data()
+    
+    # Normaliza
+    scaler_x = StandardScaler()
+    scaler_y = StandardScaler()
+    
+    X_train_norm = scaler_x.fit_transform(X_train)
+    X_test_norm = scaler_x.transform(X_test)
+    
+    y_train_norm = scaler_y.fit_transform(y_train.reshape(-1, 1))
+    y_test_norm = scaler_y.transform(y_test.reshape(-1, 1))
+    
+    # Modifica preparação dos dados
+    X_train_tensor = torch.tensor(X_train_norm, dtype=torch.float32)
+    y_train_tensor = torch.tensor(y_train_norm, dtype=torch.float32)
+    
+    # Remover concatenação com target
+    train_data = X_train_tensor  # Usar apenas features
+    
+    net = ComplexGeometricNetwork(
+        input_dimensions=X_train.shape[1],
+        output_dimensions=1,
+        shape_type=GeometricShape.ADAPTIVE
+    )
+    
+    net.learn(
+        training_data=train_data,  # Apenas features
         epochs=100,
         real_time_monitor=True
     )
     
-    sample = np.array([[25.0, 1014, 67]])
-    sample_norm = scaler.transform(sample)
-    prediction = net.process_input_batch(sample_norm)
-    print("Predição (numérica):", scaler.inverse_transform(prediction.cpu().detach().numpy()))
-
-def main_vision():
-    # Carrega e prepara dados
-    X, y = load_vision_data()
-    print(f"Dataset shape: {X.shape}")
+    # Teste sem concatenação
+    X_test_tensor = torch.tensor(X_test_norm, dtype=torch.float32)
+    predictions = net.process_input_batch(X_test_tensor)
+    predictions = scaler_y.inverse_transform(predictions.cpu().detach().numpy())
     
-    # Converte labels para one-hot encoding
-    y_onehot = np.zeros((len(y), 3))
-    for i, label in enumerate(y):
-        y_onehot[i, label] = 1
+    # Métricas
+    mse = mean_squared_error(y_test, predictions)
+    mape = mean_absolute_percentage_error(y_test, predictions)
+    print(f"\nMétricas de Teste:")
+    print(f"MSE: {mse:.2f}")
+    print(f"MAPE: {mape*100:.2f}%")
     
-    net = ComplexGeometricNetwork(
-        input_dimensions=X.shape[1],
-        output_dimensions=3,
-        shape_type=GeometricShape.ADAPTIVE
-    )
-    
-    # Treina com dados e labels
-    # Treina apenas com features
-    X_norm = (X - X.min()) / (X.max() - X.min())
-    net.learn(
-        training_data=X_norm,
-        epochs=100, 
-        real_time_monitor=True
-    )
-    
-    # Testa formas
-    size = 32
-    test_X, test_y = generate_shapes()
-    test_X = (test_X - test_X.min()) / (test_X.max() - test_X.min())
-    
-    shape_names = {0:'Círculo', 1:'Quadrado', 2:'Triângulo'}
-    
-    plt.figure(figsize=(20,4))
-    correct = 0
-    
-    predictions = []  # Lista para armazenar predições
-    
-    for i in range(5):
-        # Normaliza cada imagem individualmente
-        img = test_X[i].reshape(1, -1)
-        img = (img - img.min()) / (img.max() - img.min())
-        
-        # Processa com reset de estado
-        with torch.no_grad():
-            pred = net.process_input_batch(img)
-            pred = pred.squeeze()
-            pred = torch.softmax(pred, dim=0)
-            pred_idx = int(torch.argmax(pred).item())
-            predictions.append(pred_idx)  # Armazena predição
-            
-        # Verifica se predições são diferentes    
-        if i > 0 and predictions[i] == predictions[i-1]:
-            print(f"Aviso: Predições iguais para imagens {i-1} e {i}")
-            
-        plt.subplot(1,5,i+1)
-        plt.imshow(test_X[i].reshape(size,size), cmap='gray')
-        
-        # Avalia
-        if pred_idx == test_y[i]:
-            correct += 1
-            color = 'green'
-        else:
-            color = 'red'
-        
-        # Mostra confiança da predição
-        conf = float(pred[pred_idx])
-        plt.title(
-            f'Pred: {shape_names[pred_idx]} ({conf:.1%})\nReal: {shape_names[test_y[i]]}',
-            color=color
-        )
-        plt.axis('off')
-    
-    acc = correct/5
-    plt.suptitle(f'Acurácia: {acc:.0%} ({correct}/5)', fontsize=12)
-    plt.tight_layout()
+    # Visualização
+    plt.figure(figsize=(12,6))
+    plt.plot(y_test, label='Real')
+    plt.plot(predictions, label='Previsto')
+    plt.title('S&P500 - Previsão vs Real')
+    plt.legend()
+    plt.grid(True)
     plt.show()
 
+
 if __name__ == "__main__":
-    print("=== Teste com dados numéricos ===")
-    main_numeric()
-    print("\n=== Teste com dados de visão computacional ===")
-    main_vision()
+    # print("=== Teste com dados numéricos ===")
+    # main_numeric()
+    print("\n=== Teste com dados financeiros ===")
+    main_financial()
