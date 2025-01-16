@@ -8,6 +8,7 @@ from utils import device
 import matplotlib.pyplot as plt
 import torch.nn.functional as F
 import numpy as np
+from network_visualizer import NetworkVisualizer
 
 class GeometricShape(Enum):
     HYPERCUBE = "hypercube"
@@ -21,6 +22,7 @@ class ComplexGeometricNetwork:
         self.output_dimensions = output_dimensions
         self.dimensions = input_dimensions
         self.shape_type = shape_type
+        self.visualizer = NetworkVisualizer()
         
         # Cache e estado
         self.n_cells = None
@@ -36,51 +38,49 @@ class ComplexGeometricNetwork:
         self.validation_errors = []
         self.best_error = float('inf')
         self.stress_threshold = 0.3
-        self.learning_rate = 0.005  # Reduzido
-        self.min_lr = 0.0001
-        self.scheduler_patience = 5
-        self.scheduler_factor = 0.9
-        self.weight_decay = 1e-5
-        self.attention_weights = None
+        self.learning_rate = 0.01 
+        self.min_lr = 0.001 
+        self.scheduler_patience = 10
+        self.scheduler_factor = 0.7  
+        self.weight_decay = 1e-6  
         self.skip_connections = True
+        self.skip_alpha = 0.3  
         self.activation = lambda x: torch.relu(x)
         self.patience = 25
         self.min_delta = 0.00001
-        self.morph_strength = 1.5
+        self.morph_strength = 2.0 
 
     def _initialize_topology(self):
         """Inicializa topologia da rede"""
-        if self.shape_type in {GeometricShape.HYPERCUBE, GeometricShape.DODECAHEDRON, GeometricShape.TESSERACT}:
-            self._create_hypercube_topology()
-        else:
-            self._create_hypercube_topology()
+        self._create_hypercube_topology()
 
     def _create_hypercube_topology(self):
         if self.shape_type == GeometricShape.HYPERCUBE:
-            max_dims = min(self.dimensions, 4)
-            base_vertices = list(itertools.product([0, 1], repeat=max_dims))
+            # Definir dimensão oculta primeiro
+            self.hidden_dim = 3
+            
+            # Criar vértices do hipercubo 3D
+            base_vertices = list(itertools.product([0, 1], repeat=self.hidden_dim))
             vertices = torch.tensor(base_vertices, dtype=torch.float, device=device)
-            if max_dims < self.dimensions:
-                padding = torch.zeros(len(vertices), self.dimensions - max_dims, device=device)
-                vertices = torch.cat((vertices, padding), dim=1)
-
-            print(f"Creating {len(vertices)} cells with {self.dimensions} dimensions")
-            self.cells = [GeometricCell(self.dimensions) for _ in range(len(vertices))]
+    
+            self.cells = [GeometricCell(self.hidden_dim) for _ in range(len(vertices))]
+            
             for i, cell in enumerate(self.cells):
                 cell.position = vertices[i].clone()
+                # Conectar vértices que diferem em uma coordenada
                 for j, other_cell in enumerate(self.cells):
                     diff = torch.sum(torch.abs(vertices[i] - vertices[j]))
                     if diff.item() == 1.0:
                         cell.add_connection(other_cell)
-            print(f"Created {len(self.cells)} cells with {self.dimensions} dimensions")
+                        
+            print(f"Created {len(self.cells)} cells with {self.hidden_dim} dimensions")
             self.topology = {'vertices': vertices, 'cells': self.cells}
         else:
-            # Inicialização mais diversa
             std = torch.sqrt(torch.tensor(2.0 / (self.input_dimensions + self.hidden_dim), device=device))
             self.cells = []
             
-            # Cria células com posições mais diversas
-            positions = []  # Lista para armazenar posições
+            # Cria células com posições diversas
+            positions = []
             for i in range(self.n_cells):
                 cell = GeometricCell(self.hidden_dim)
                 angle = torch.tensor(2 * torch.pi * i / self.n_cells, device=device)
@@ -95,7 +95,6 @@ class ComplexGeometricNetwork:
             self._update_all_connections()
             
             print(f"Created {len(self.cells)} cells with {self.hidden_dim} dimensions")
-            # Cria topologia com as posições geradas
             self.topology = {
                 'vertices': torch.stack(positions),
                 'cells': self.cells
@@ -125,9 +124,7 @@ class ComplexGeometricNetwork:
 
         # Ajustes para séries temporais
         if self.shape_type == GeometricShape.ADAPTIVE:
-            # Mais células para capturar padrões temporais
             self.n_cells = int(self.n_cells * 1.5)
-            # Dimensão oculta maior 
             self.hidden_dim = max(64, self.hidden_dim)
         
         print(f"Adaptative Architecture: {self.n_cells} cells, {self.hidden_dim} hidden dim")
@@ -178,6 +175,14 @@ class ComplexGeometricNetwork:
         features = self.projection(batch_data)
         features = F.layer_norm(features, features.shape[1:])
         
+        # Ajusta dimensões se necessário
+        if features.shape[1] != self._cell_positions_cache.shape[1]:
+            pad_size = abs(features.shape[1] - self._cell_positions_cache.shape[1])
+            if features.shape[1] < self._cell_positions_cache.shape[1]:
+                features = F.pad(features, (0, pad_size), 'constant', 0)
+            else:
+                features = features[:, :self._cell_positions_cache.shape[1]]
+        
         # Calcula atenção vetorizada
         similarity = torch.matmul(features, self._cell_positions_cache.t())
         attention = torch.softmax(
@@ -198,7 +203,7 @@ class ComplexGeometricNetwork:
         all_preds = []
     
         for i in range(batch_size):
-            single_input = torch.tensor(batch_data[i], dtype=torch.float, device=device).unsqueeze(0)
+            single_input = batch_data[i].clone().detach().to(device=device, dtype=torch.float).unsqueeze(0)
             self._map_input_to_cells(single_input)
             self._morph_structure(morph_factor=0.1)
     
@@ -224,12 +229,18 @@ class ComplexGeometricNetwork:
                 feature_map = feature_map.view(-1, self.output_dimensions)
                 skip_features = skip_features.view(-1, self.output_dimensions)
                 
-                gate = torch.sigmoid(torch.sum(feature_map * skip_features, dim=-1, keepdim=True))
-                feature_map = feature_map * (1 - gate) + skip_features * gate
+                # Skip connection mais forte
+                gate = torch.sigmoid(torch.sum(feature_map * skip_features, dim=-1, keepdim=True)) * self.skip_alpha
+                feature_map = feature_map * (1 - gate) + skip_features * (1 + gate)
+
+            # Adiciona ruído para aumentar variância
+            noise = torch.randn_like(feature_map) * 0.01
+            feature_map = feature_map + noise
     
             all_preds.append(feature_map)
     
         return torch.cat(all_preds, dim=0)
+    
     def _morph_structure(self, morph_factor):
         if self.shape_type == GeometricShape.ADAPTIVE:
             morph_factor *= self.morph_strength
@@ -248,7 +259,6 @@ class ComplexGeometricNetwork:
                 morph_strength = torch.exp(-distance) * 3.0  # Aumentado
                 cell.position += morph_direction * morph_strength
                 
-                # Reduz ruído
                 noise = torch.randn_like(cell.position) * 0.001
                 cell.position += noise
                 
@@ -317,26 +327,15 @@ class ComplexGeometricNetwork:
             self._reorganize_connections()
             
         for cell, pattern in zip(self.cells, patterns['local']):
-            # Inicializa força
             force = torch.zeros(self.hidden_dim, device=device)
-            
-            # Ajusta centro do padrão
             pattern_center = pattern['center'][:self.hidden_dim]
             
             if pattern['symmetry'] < 0.8:
+                pattern_center = pattern_center.to(device)
                 force += (pattern_center - cell.position) * 0.1
                 
-            # Calcula média do valor da célula
-            cell_value_mean = torch.mean(cell.value)
-            
-            if abs(cell_value_mean.item() - pattern['mean']) > 0.2:
-                direction = torch.sign(torch.tensor(pattern['mean'], device=device) - cell_value_mean)
-                force += direction * torch.ones_like(cell.position) * 0.1
-                
-            # Aplica forças
             cell.position += force * self.learning_rate
-            mean_tensor = torch.tensor(pattern['mean'], device=device)
-            cell.value = 0.8 * cell.value + 0.2 * mean_tensor
+            cell.value = 0.8 * cell.value + 0.2 * torch.tensor(pattern['mean'], device=device)
 
     def _reorganize_connections(self):
         for cell in self.cells:
@@ -351,7 +350,6 @@ class ComplexGeometricNetwork:
         return stress
 
     def _calculate_forces(self, cell, patterns):
-        # Inicializa forças com dimensão correta
         forces = torch.zeros(self.hidden_dim, device=device)
         
         for pattern in patterns:
@@ -400,7 +398,7 @@ class ComplexGeometricNetwork:
             self._initialize_topology()
 
         batch_size = min(64, len(training_data))  # Batch size maior
-        training_data = torch.tensor(training_data, dtype=torch.float, device=device)
+        training_data = training_data.clone().detach().to(dtype=torch.float, device=device)
         num_samples = training_data.shape[0]
         num_batches = max(1, num_samples // batch_size)
         
@@ -412,13 +410,11 @@ class ComplexGeometricNetwork:
                 'eps': 1e-8}
         ])
         
-        # Scheduler específico para finanças
         scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
             optimizer,
             mode='min',
             factor=0.5,
             patience=self.scheduler_patience,
-            verbose=True,
             min_lr=self.min_lr
         )
         
@@ -467,6 +463,8 @@ class ComplexGeometricNetwork:
                     self._adapt_structure({'local': patterns})
                     self._optimize_cell_positions(patterns)
                     self._update_all_connections()
+                    if real_time_monitor:
+                        self.visualizer.update(self)
             
             avg_loss = epoch_loss / num_batches
             self.training_errors.append(avg_loss)
@@ -489,3 +487,4 @@ class ComplexGeometricNetwork:
                     for cell, pos in zip(self.cells, best_weights):
                         cell.position = pos.clone()
                 break
+                

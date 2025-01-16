@@ -3,14 +3,12 @@ import yfinance as yf
 import pandas as pd
 
 def load_financial_data(test_size=0.2):
-    """Carrega dados do índice S&P500 - último ano"""
-    # Download 1 ano de dados
+    """Carrega dados do índice S&P500"""
     sp500 = yf.download('^GSPC', 
                         start='2023-01-01', 
                         end='2024-01-01',
                         interval='1d')
     
-    # Features técnicas mais importantes
     sp500['Returns'] = sp500['Close'].pct_change()
     sp500['MA20'] = sp500['Close'].rolling(window=20).mean()
     sp500['RSI'] = calculate_rsi(sp500['Close'])
@@ -18,7 +16,6 @@ def load_financial_data(test_size=0.2):
     
     sp500 = sp500.dropna()
     
-    # Features e target
     X = sp500[['Returns', 'MA20', 'RSI', 'Volatility']].values
     y = sp500['Close'].values
     
@@ -38,7 +35,6 @@ def calculate_rsi(data, periods=14):
     return 100 - (100 / (1 + rs))
 
 def load_numeric_data():
-    # Exemplo de dados climáticos
     data = [
         [25.5, 1013, 65],
         [24.8, 1015, 68],

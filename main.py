@@ -16,13 +16,11 @@ def main_numeric():
     X, scaler = numeric_converter(data)
     X_tensor = torch.tensor(X, dtype=torch.float, device=device)
     
-    # Cria rede
     net = ComplexGeometricNetwork(
         input_dimensions=X.shape[1],
         output_dimensions=3,
         shape_type=GeometricShape.ADAPTIVE
     )     
-    # Agora sim, treina a rede
     net.learn(
         training_data=X_tensor,
         epochs=50,
@@ -50,29 +48,38 @@ def main_financial():
     y_train_norm = scaler_y.fit_transform(y_train.reshape(-1, 1))
     y_test_norm = scaler_y.transform(y_test.reshape(-1, 1))
     
-    # Modifica preparação dos dados
-    X_train_tensor = torch.tensor(X_train_norm, dtype=torch.float32)
-    y_train_tensor = torch.tensor(y_train_norm, dtype=torch.float32)
+    # lookback window
+    lookback = 5
+    X_train_with_history = []
+    for i in range(lookback, len(X_train_norm)):
+        window = X_train_norm[i-lookback:i]
+        X_train_with_history.append(window.flatten())
     
-    # Remover concatenação com target
-    train_data = X_train_tensor  # Usar apenas features
+    X_train_tensor = torch.tensor(np.array(X_train_with_history), dtype=torch.float32)
     
     net = ComplexGeometricNetwork(
-        input_dimensions=X_train.shape[1],
+        input_dimensions=X_train.shape[1] * lookback,
         output_dimensions=1,
-        shape_type=GeometricShape.ADAPTIVE
+        shape_type=GeometricShape.HYPERCUBE
     )
-    
+
     net.learn(
-        training_data=train_data,  # Apenas features
-        epochs=100,
+        training_data=X_train_tensor,
+        epochs=150,
         real_time_monitor=True
     )
     
-    # Teste sem concatenação
-    X_test_tensor = torch.tensor(X_test_norm, dtype=torch.float32)
+    # Prepara dados de teste com lookback
+    X_test_with_history = []
+    for i in range(lookback, len(X_test_norm)):
+        window = X_test_norm[i-lookback:i]
+        X_test_with_history.append(window.flatten())
+    
+    X_test_tensor = torch.tensor(np.array(X_test_with_history), dtype=torch.float32)
     predictions = net.process_input_batch(X_test_tensor)
     predictions = scaler_y.inverse_transform(predictions.cpu().detach().numpy())
+
+    y_test = y_test[lookback:]
     
     # Métricas
     mse = mean_squared_error(y_test, predictions)
@@ -81,18 +88,30 @@ def main_financial():
     print(f"MSE: {mse:.2f}")
     print(f"MAPE: {mape*100:.2f}%")
     
-    # Visualização
     plt.figure(figsize=(12,6))
-    plt.plot(y_test, label='Real')
-    plt.plot(predictions, label='Previsto')
-    plt.title('S&P500 - Previsão vs Real')
-    plt.legend()
-    plt.grid(True)
-    plt.show()
+    plt.clf()
+    
+    if len(y_test) > 0 and len(predictions) > 0:
+        plt.plot(y_test, label='Real', alpha=0.7)
+        plt.plot(predictions, label='Previsto', alpha=0.7)
+        plt.title('S&P500 - Previsão vs Real')
+        plt.xlabel('Tempo')
+        plt.ylabel('Valor')
+        plt.legend()
+        plt.grid(True)
+        
+        plt.draw()
+        plt.pause(0.1)
+        
+        plt.savefig('./assets/previsao_sp500.png')
+    else:
+        print("Erro: Dados vazios para plotagem")
+    
+    plt.show(block=True) 
 
 
 if __name__ == "__main__":
-    # print("=== Teste com dados numéricos ===")
-    # main_numeric()
-    print("\n=== Teste com dados financeiros ===")
-    main_financial()
+    print("=== Teste com dados numéricos ===")
+    main_numeric()
+    # print("\n=== Teste com dados financeiros ===")
+    # main_financial()
